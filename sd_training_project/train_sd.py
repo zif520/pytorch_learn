@@ -92,6 +92,26 @@ class HFCIFAR10Dataset(Dataset):
         caption = self.label_names[item['label']]
         return image, caption
 
+class CIFAR10SDWrapper(Dataset):
+    def __init__(self, cifar_dataset, tokenizer):
+        self.cifar_dataset = cifar_dataset
+        self.tokenizer = tokenizer
+    def __len__(self):
+        return len(self.cifar_dataset)
+    def __getitem__(self, idx):
+        image, caption = self.cifar_dataset[idx]
+        tokenized = self.tokenizer(
+            caption,
+            padding="max_length",
+            truncation=True,
+            max_length=77,
+            return_tensors="pt"
+        )
+        return {
+            "pixel_values": image,
+            "input_ids": tokenized.input_ids[0]
+        }
+
 def load_models(model_id="runwayml/stable-diffusion-v1-5"):
     """加载预训练模型"""
     print(f"正在加载模型: {model_id}")
@@ -187,31 +207,16 @@ def main():
     if args.data_dir is None:
         print("使用Hugging Face Hub上的CIFAR-10数据集")
         dataset = HFCIFAR10Dataset(split='train', image_size=args.image_size)
-        # 用CLIP tokenizer编码caption
-        class CIFAR10SDWrapper(Dataset):
-            def __init__(self, cifar_dataset, tokenizer):
-                self.cifar_dataset = cifar_dataset
-                self.tokenizer = tokenizer
-            def __len__(self):
-                return len(self.cifar_dataset)
-            def __getitem__(self, idx):
-                image, caption = self.cifar_dataset[idx]
-                tokenized = self.tokenizer(
-                    caption,
-                    padding="max_length",
-                    truncation=True,
-                    max_length=77,
-                    return_tensors="pt"
-                )
-                return {
-                    "pixel_values": image,
-                    "input_ids": tokenized.input_ids[0]
-                }
         dataset = CIFAR10SDWrapper(dataset, tokenizer)
     else:
         print(f"使用自定义数据集: {args.data_dir}")
         dataset = SimpleDataset(args.data_dir, tokenizer, image_size=args.image_size)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    # 优化：加速数据加载
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+    
+    # 设备提示
+    if device.type == "mps":
+        print("\n💡 建议：你正在使用Apple Silicon MPS加速，可以尝试适当调大 batch_size（如2、4），以提升训练速度。\n")
     
     # 创建优化器
     optimizer = torch.optim.AdamW(unet.parameters(), lr=args.learning_rate)

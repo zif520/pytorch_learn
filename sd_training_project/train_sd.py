@@ -20,6 +20,8 @@ from transformers import CLIPTokenizer, CLIPTextModel
 from tqdm import tqdm
 import argparse
 from pathlib import Path
+import torchvision
+from torchvision import datasets, transforms
 
 class SimpleDataset(Dataset):
     """简单的数据集类，用于加载图片和文本描述"""
@@ -71,6 +73,25 @@ class SimpleDataset(Dataset):
             "pixel_values": image,
             "input_ids": tokenized.input_ids[0]
         }
+
+class CIFAR10CaptionDataset(Dataset):
+    """CIFAR-10数据集包装，生成简单caption"""
+    def __init__(self, train=True, image_size=32):
+        self.dataset = datasets.CIFAR10(root="./data", train=train, download=True)
+        self.image_size = image_size
+        self.labels = self.dataset.targets
+        self.label_names = self.dataset.classes
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        image = image.resize((self.image_size, self.image_size))
+        image = np.array(image).astype(np.float32) / 255.0
+        image = torch.from_numpy(image).permute(2, 0, 1)  # HWC -> CHW
+        caption = self.label_names[label]
+        return image, caption
 
 def load_models(model_id="runwayml/stable-diffusion-v1-5"):
     """加载预训练模型"""
@@ -127,13 +148,13 @@ def train_step(batch, unet, text_encoder, vae, scheduler, optimizer, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Stable Diffusion 1.5 训练脚本")
-    parser.add_argument("--data_dir", type=str, default="data", help="数据目录路径")
+    parser.add_argument("--data_dir", type=str, default=None, help="数据目录路径（如不指定则用CIFAR-10）")
     parser.add_argument("--output_dir", type=str, default="output", help="输出目录")
     parser.add_argument("--epochs", type=int, default=10, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=1, help="批次大小")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="学习率")
     parser.add_argument("--save_steps", type=int, default=100, help="保存步数")
-    
+    parser.add_argument("--image_size", type=int, default=32, help="图片尺寸（CIFAR-10为32）")
     args = parser.parse_args()
     
     # 检查设备
@@ -164,7 +185,33 @@ def main():
     vae.requires_grad_(False)
     
     # 创建数据集和数据加载器
-    dataset = SimpleDataset(args.data_dir, tokenizer)
+    if args.data_dir is None:
+        print("使用CIFAR-10数据集")
+        dataset = CIFAR10CaptionDataset(train=True, image_size=args.image_size)
+        # 用CLIP tokenizer编码caption
+        class CIFAR10SDWrapper(Dataset):
+            def __init__(self, cifar_dataset, tokenizer):
+                self.cifar_dataset = cifar_dataset
+                self.tokenizer = tokenizer
+            def __len__(self):
+                return len(self.cifar_dataset)
+            def __getitem__(self, idx):
+                image, caption = self.cifar_dataset[idx]
+                tokenized = self.tokenizer(
+                    caption,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=77,
+                    return_tensors="pt"
+                )
+                return {
+                    "pixel_values": image,
+                    "input_ids": tokenized.input_ids[0]
+                }
+        dataset = CIFAR10SDWrapper(dataset, tokenizer)
+    else:
+        print(f"使用自定义数据集: {args.data_dir}")
+        dataset = SimpleDataset(args.data_dir, tokenizer, image_size=args.image_size)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     
     # 创建优化器

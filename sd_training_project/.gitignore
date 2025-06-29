@@ -131,3 +131,5 @@ dmypy.json
 cython_debug/ 
 
 *.safetensors
+data
+output

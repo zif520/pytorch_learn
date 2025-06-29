@@ -22,6 +22,7 @@ import argparse
 from pathlib import Path
 import torchvision
 from torchvision import datasets, transforms
+from datasets import load_dataset
 
 class SimpleDataset(Dataset):
     """简单的数据集类，用于加载图片和文本描述"""
@@ -74,23 +75,21 @@ class SimpleDataset(Dataset):
             "input_ids": tokenized.input_ids[0]
         }
 
-class CIFAR10CaptionDataset(Dataset):
-    """CIFAR-10数据集包装，生成简单caption"""
-    def __init__(self, train=True, image_size=32):
-        self.dataset = datasets.CIFAR10(root="./data", train=train, download=True)
+class HFCIFAR10Dataset(Dataset):
+    def __init__(self, split='train', image_size=32):
+        self.dataset = load_dataset('cifar10', split=split)
         self.image_size = image_size
-        self.labels = self.dataset.targets
-        self.label_names = self.dataset.classes
+        self.label_names = self.dataset.features['label'].names
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        image, label = self.dataset[idx]
-        image = image.resize((self.image_size, self.image_size))
+        item = self.dataset[idx]
+        image = item['img'].resize((self.image_size, self.image_size))
         image = np.array(image).astype(np.float32) / 255.0
-        image = torch.from_numpy(image).permute(2, 0, 1)  # HWC -> CHW
-        caption = self.label_names[label]
+        image = torch.from_numpy(image).permute(2, 0, 1)
+        caption = self.label_names[item['label']]
         return image, caption
 
 def load_models(model_id="runwayml/stable-diffusion-v1-5"):
@@ -186,8 +185,8 @@ def main():
     
     # 创建数据集和数据加载器
     if args.data_dir is None:
-        print("使用CIFAR-10数据集")
-        dataset = CIFAR10CaptionDataset(train=True, image_size=args.image_size)
+        print("使用Hugging Face Hub上的CIFAR-10数据集")
+        dataset = HFCIFAR10Dataset(split='train', image_size=args.image_size)
         # 用CLIP tokenizer编码caption
         class CIFAR10SDWrapper(Dataset):
             def __init__(self, cifar_dataset, tokenizer):

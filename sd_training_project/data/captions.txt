@@ -1,0 +1,2 @@
+image1.jpg	一只可爱的猫
+image2.jpg	美丽的日落

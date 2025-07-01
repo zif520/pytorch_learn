@@ -2,6 +2,7 @@
 """
 Stable Diffusion 1.5 训练脚本 - 初学者版本
 适用于 macOS 系统
+python train_sd.py --image_size 256 --batch_size 2 --epochs 10 
 """
 
 import os
@@ -75,31 +76,30 @@ class SimpleDataset(Dataset):
             "input_ids": tokenized.input_ids[0]
         }
 
-class HFCIFAR10Dataset(Dataset):
-    def __init__(self, split='train', image_size=32):
-        self.dataset = load_dataset('cifar10', split=split)
+class SmithsonianButterfliesDataset(Dataset):
+    def __init__(self, split='train', image_size=256):
+        self.dataset = load_dataset('huggan/smithsonian_butterflies_subset', split=split)
         self.image_size = image_size
-        self.label_names = self.dataset.features['label'].names
-
     def __len__(self):
         return len(self.dataset)
-
     def __getitem__(self, idx):
         item = self.dataset[idx]
-        image = item['img'].resize((self.image_size, self.image_size))
+        image = item['image'].resize((self.image_size, self.image_size))
         image = np.array(image).astype(np.float32) / 255.0
+        if image.ndim == 2:
+            image = np.stack([image]*3, axis=-1)
         image = torch.from_numpy(image).permute(2, 0, 1)
-        caption = self.label_names[item['label']]
+        caption = item['name']
         return image, caption
 
-class CIFAR10SDWrapper(Dataset):
-    def __init__(self, cifar_dataset, tokenizer):
-        self.cifar_dataset = cifar_dataset
+class ButterflySDWrapper(Dataset):
+    def __init__(self, base_dataset, tokenizer):
+        self.base_dataset = base_dataset
         self.tokenizer = tokenizer
     def __len__(self):
-        return len(self.cifar_dataset)
+        return len(self.base_dataset)
     def __getitem__(self, idx):
-        image, caption = self.cifar_dataset[idx]
+        image, caption = self.base_dataset[idx]
         tokenized = self.tokenizer(
             caption,
             padding="max_length",
@@ -172,7 +172,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=1, help="批次大小")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="学习率")
-    parser.add_argument("--save_steps", type=int, default=100, help="保存步数")
+    parser.add_argument("--save_steps", type=int, default=1000, help="保存步数（建议1000或更大，避免磁盘爆满）")
     parser.add_argument("--image_size", type=int, default=32, help="图片尺寸（CIFAR-10为32）")
     args = parser.parse_args()
     
@@ -205,9 +205,9 @@ def main():
     
     # 创建数据集和数据加载器
     if args.data_dir is None:
-        print("使用Hugging Face Hub上的CIFAR-10数据集")
-        dataset = HFCIFAR10Dataset(split='train', image_size=args.image_size)
-        dataset = CIFAR10SDWrapper(dataset, tokenizer)
+        print("使用Hugging Face Hub上的Smithsonian Butterflies数据集")
+        dataset = SmithsonianButterfliesDataset(split='train', image_size=args.image_size)
+        dataset = ButterflySDWrapper(dataset, tokenizer)
     else:
         print(f"使用自定义数据集: {args.data_dir}")
         dataset = SimpleDataset(args.data_dir, tokenizer, image_size=args.image_size)
@@ -242,6 +242,11 @@ def main():
             # 定期保存模型
             if global_step % args.save_steps == 0:
                 save_path = output_dir / f"unet_step_{global_step}"
+                # 删除旧的 step 检查点
+                for d in output_dir.glob("unet_step_*"):
+                    if d != save_path and d.is_dir():
+                        import shutil
+                        shutil.rmtree(d)
                 unet.save_pretrained(save_path)
                 print(f"\n模型已保存到: {save_path}")
         
@@ -250,6 +255,11 @@ def main():
         print(f"第 {epoch + 1} 轮平均损失: {avg_loss:.4f}")
         
         save_path = output_dir / f"unet_epoch_{epoch + 1}"
+        # 删除旧的 epoch 检查点
+        for d in output_dir.glob("unet_epoch_*"):
+            if d != save_path and d.is_dir():
+                import shutil
+                shutil.rmtree(d)
         unet.save_pretrained(save_path)
         print(f"模型已保存到: {save_path}")
     

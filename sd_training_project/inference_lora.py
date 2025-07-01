@@ -1,50 +1,36 @@
 #!/usr/bin/env python3
+"""
+Stable Diffusion 1.5 + LoRA 推理脚本
+支持加载LoRA adapter，指定LoRA参数，灵活推理。
+"""
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-"""
-Stable Diffusion 1.5 推理脚本 - 测试训练好的模型
-ython inference.py --model_path output/unet_epoch_49 --prompt "cat" --output_path cat.png --height 256 --width 256 --seed 42
-"""
-
 import torch
-from diffusers import StableDiffusionPipeline, UNet2DConditionModel, AutoencoderKL, DDPMScheduler
+from diffusers import StableDiffusionPipeline, UNet2DConditionModel, AutoencoderKL, DDPMScheduler, LoRAAttnProcessor
 from transformers import CLIPTokenizer, CLIPTextModel
 import argparse
 from pathlib import Path
 
-def load_trained_model(model_path, base_model_id="runwayml/stable-diffusion-v1-5"):
-    """加载训练好的模型"""
-    print(f"加载训练好的模型: {model_path}")
-    
-    # 加载基础模型组件
-    tokenizer = CLIPTokenizer.from_pretrained(base_model_id, subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained(base_model_id, subfolder="text_encoder")
-    vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae")
-    scheduler = DDPMScheduler.from_pretrained(base_model_id, subfolder="scheduler")
-    
-    # 加载训练好的 UNet
-    unet = UNet2DConditionModel.from_pretrained(model_path)
-    
-    # 创建 pipeline
-    pipe = StableDiffusionPipeline(
-        unet=unet,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
-        vae=vae,
-        scheduler=scheduler,
-        safety_checker=None,
-        feature_extractor=None,
-        requires_safety_checker=False
-    )
-    
-    return pipe
+def load_lora_unet(base_model_id, lora_path, r=4, lora_alpha=1.0):
+    # 加载基础UNet
+    unet = UNet2DConditionModel.from_pretrained(base_model_id, subfolder="unet")
+    # 注入LoRA结构（推理时r/alpha需与训练时一致）
+    for name, module in unet.named_modules():
+        if hasattr(module, 'set_processor'):
+            module.set_processor(LoRAAttnProcessor(r=r, lora_alpha=lora_alpha))
+    # 加载LoRA权重
+    unet.load_attn_procs(lora_path)
+    return unet
 
 def main():
-    parser = argparse.ArgumentParser(description="Stable Diffusion 1.5 推理脚本")
-    parser.add_argument("--model_path", type=str, default="output/unet_final", help="训练好的模型路径")
+    parser = argparse.ArgumentParser(description="Stable Diffusion 1.5 + LoRA 推理脚本")
+    parser.add_argument("--base_model_id", type=str, default="runwayml/stable-diffusion-v1-5", help="基础模型ID")
+    parser.add_argument("--lora_path", type=str, required=True, help="LoRA adapter权重目录")
+    parser.add_argument("--lora_r", type=int, default=4, help="LoRA秩（与训练时一致）")
+    parser.add_argument("--lora_alpha", type=float, default=1.0, help="LoRA缩放因子（与训练时一致）")
     parser.add_argument("--prompt", type=str, default=None, help="生成提示词")
     parser.add_argument("--prompt_file", type=str, default=None, help="批量生成时的提示词文件（每行一个prompt）")
-    parser.add_argument("--output_path", type=str, default="generated_image.png", help="输出图片路径或前缀")
+    parser.add_argument("--output_path", type=str, default="generated_lora.png", help="输出图片路径或前缀")
     parser.add_argument("--num_inference_steps", type=int, default=50, help="推理步数")
     parser.add_argument("--guidance_scale", type=float, default=7.5, help="引导强度")
     parser.add_argument("--height", type=int, default=512, help="生成图片高度")
@@ -63,13 +49,25 @@ def main():
         device = torch.device("cpu")
         print("使用 CPU")
 
-    # 加载模型
-    try:
-        pipe = load_trained_model(args.model_path)
-        pipe = pipe.to(device)
-    except Exception as e:
-        print(f"模型加载失败: {e}")
-        return
+    # 加载基础组件
+    tokenizer = CLIPTokenizer.from_pretrained(args.base_model_id, subfolder="tokenizer")
+    text_encoder = CLIPTextModel.from_pretrained(args.base_model_id, subfolder="text_encoder")
+    vae = AutoencoderKL.from_pretrained(args.base_model_id, subfolder="vae")
+    scheduler = DDPMScheduler.from_pretrained(args.base_model_id, subfolder="scheduler")
+    # 加载LoRA注入的UNet
+    unet = load_lora_unet(args.base_model_id, args.lora_path, r=args.lora_r, lora_alpha=args.lora_alpha)
+    # 构建pipeline
+    pipe = StableDiffusionPipeline(
+        unet=unet,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        vae=vae,
+        scheduler=scheduler,
+        safety_checker=None,
+        feature_extractor=None,
+        requires_safety_checker=False
+    )
+    pipe = pipe.to(device)
 
     # 设置种子
     if args.seed is not None:
